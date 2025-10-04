@@ -10,6 +10,9 @@ app.use(express.json());
 
 const users = JSON.parse(fs.readFileSync("./User.json", "utf8")).users;
 const products = JSON.parse(fs.readFileSync("./Product.json", "utf8")).products;
+const { v4: uuidv4 } = require('uuid');
+const path = require('path');
+const PRODUCTS_FILE = path.join(__dirname, './Product.json');
 
 
 // Middleware: API Key
@@ -113,6 +116,114 @@ app.use((err, req, res, next) => {
     error: err.message || "Error interno del servidor"
   });
 });
+
+// helper para guardar cambios en JSON
+function saveProducts() {
+  fs.writeFileSync(PRODUCTS_FILE, JSON.stringify({ products }, null, 2), "utf8");
+}
+
+// middleware de rol
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!roles.includes(req.user.role)) {
+      const err = new Error("Permiso denegado");
+      err.status = 403;
+      return next(err);
+    }
+    next();
+  };
+}
+
+// POST /products -> crear producto (editor o admin)
+app.post('/products', jwtAuth, requireRole('editor', 'admin'), (req, res, next) => {
+  const { name, sku, description, price, stock, category } = req.body;
+
+  if (!name || !sku || !price || stock === undefined || !category) {
+    const err = new Error("Faltan campos obligatorios");
+    err.status = 422;
+    return next(err);
+  }
+  if (price <= 0 || stock < 0) {
+    const err = new Error("Precio o stock inválidos");
+    err.status = 422;
+    return next(err);
+  }
+  if (products.find(p => p.sku === sku)) {
+    const err = new Error("SKU ya existe");
+    err.status = 409;
+    return next(err);
+  }
+
+  const now = new Date().toISOString();
+  const newProduct = {
+    id: uuidv4(),
+    name,
+    sku,
+    description: description || "",
+    price,
+    stock,
+    category,
+    createdAt: now,
+    updatedAt: now
+  };
+
+  products.push(newProduct);
+  saveProducts();
+
+  res.status(201).json(newProduct);
+});
+
+// PUT /products/:id -> actualizar producto (editor o admin)
+app.put('/products/:id', jwtAuth, requireRole('editor', 'admin'), (req, res, next) => {
+  const product = products.find(p => p.id === req.params.id);
+  if (!product) {
+    const err = new Error("Producto no encontrado");
+    err.status = 404;
+    return next(err);
+  }
+
+  const { name, sku, description, price, stock, category } = req.body;
+
+  if (sku && products.some(p => p.sku === sku && p.id !== req.params.id)) {
+    const err = new Error("SKU ya existe en otro producto");
+    err.status = 409;
+    return next(err);
+  }
+
+  if (price !== undefined && price <= 0) {
+    const err = new Error("Precio inválido");
+    err.status = 422;
+    return next(err);
+  }
+
+  if (stock !== undefined && stock < 0) {
+    const err = new Error("Stock inválido");
+    err.status = 422;
+    return next(err);
+  }
+
+  Object.assign(product, { name, sku, description, price, stock, category });
+  product.updatedAt = new Date().toISOString();
+
+  saveProducts();
+  res.json(product);
+});
+
+// DELETE /products/:id -> eliminar producto (solo admin)
+app.delete('/products/:id', jwtAuth, requireRole('admin'), (req, res, next) => {
+  const index = products.findIndex(p => p.id === req.params.id);
+  if (index === -1) {
+    const err = new Error("Producto no encontrado");
+    err.status = 404;
+    return next(err);
+  }
+
+  products.splice(index, 1);
+  saveProducts();
+
+  res.status(204).end();
+});
+
 
 
 app.listen(PORT, () => console.log(`Servidor escuchando en http://localhost:${PORT}`));
